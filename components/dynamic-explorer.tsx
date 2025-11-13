@@ -1,4 +1,4 @@
-"use client"
+ "use client"
 
 import { useState, useMemo, useEffect } from "react"
 import { Card } from "@/components/ui/card"
@@ -32,6 +32,9 @@ import {
 } from "@/lib/survey-data"
 import { Activity, TrendingUp, BarChart3 } from "lucide-react"
 
+// ----------------------
+// Chart Color Resolver
+// ----------------------
 function useChartColors() {
   const [colors, setColors] = useState({
     chart1: "#3b82f6",
@@ -43,15 +46,13 @@ function useChartColors() {
   })
 
   useEffect(() => {
-    // Create a temporary element to resolve CSS colors
     const temp = document.createElement("div")
     temp.style.display = "none"
     document.body.appendChild(temp)
 
     const resolveColor = (cssVar: string) => {
       temp.style.color = `var(${cssVar})`
-      const computed = getComputedStyle(temp).color
-      return computed
+      return getComputedStyle(temp).color
     }
 
     setColors({
@@ -69,24 +70,45 @@ function useChartColors() {
   return colors
 }
 
+// ----------------------
+// Custom Tooltip
+// ----------------------
 const CustomTooltip = ({ active, payload }: any) => {
   if (active && payload && payload.length) {
     return (
       <div className="bg-card border-2 border-primary/40 rounded-xl shadow-2xl p-4">
-        {payload.map((entry: any, index: number) => (
-          <p key={index} className="text-sm font-semibold" style={{ color: entry.color }}>
-            {entry.name}:{" "}
-            <span className="font-bold text-base">
-              {typeof entry.value === "number" ? entry.value.toFixed(2) : entry.value}
-            </span>
-          </p>
-        ))}
+        {payload.map((entry: any, index: number) => {
+          const isPercentage =
+            typeof entry.dataKey === "string" &&
+            entry.dataKey.includes("percentage")
+
+          let displayValue = entry.value
+          if (typeof entry.value === "number") {
+            if (isPercentage) {
+              displayValue = `${entry.value.toFixed(1)}%`
+            } else if (Number.isInteger(entry.value)) {
+              displayValue = entry.value.toLocaleString()
+            } else {
+              displayValue = entry.value.toFixed(2)
+            }
+          }
+
+          return (
+            <p key={index} className="text-sm font-semibold" style={{ color: entry.color }}>
+              {entry.name}:{" "}
+              <span className="font-bold text-base">{displayValue}</span>
+            </p>
+          )
+        })}
       </div>
     )
   }
   return null
 }
 
+// ==========================================================
+// MAIN COMPONENT
+// ==========================================================
 export function DynamicExplorer() {
   const chartColors = useChartColors()
   const CHART_COLORS = [
@@ -101,12 +123,20 @@ export function DynamicExplorer() {
   const [xAxis, setXAxis] = useState("PoliticalParty")
   const [yAxis, setYAxis] = useState("PoliticalKnowledge")
 
+  // NEW: Count / Percentage toggle
+  const [showPercentages, setShowPercentages] = useState(false)
+
+  // ========================================================
+  // CHART DATA PIPELINE
+  // ========================================================
   const { chartData, chartType, stats } = useMemo(() => {
     const xIsNumeric = xAxis === "GradeLevel" || xAxis === "GPA"
     const yIsNumeric = yAxis === "GradeLevel" || yAxis === "GPA"
     const yIsBoolean = yAxis === "PoliticalKnowledge"
     const xIsBoolean = xAxis === "PoliticalKnowledge"
-
+    // ========================================================
+    // CASE 1 — Scatter (numeric vs numeric)
+    // ========================================================
     if (xIsNumeric && yIsNumeric) {
       const scatterData = surveyData
         .filter((d) => d[xAxis as keyof typeof d] && d[yAxis as keyof typeof d])
@@ -140,8 +170,8 @@ export function DynamicExplorer() {
         chartType: "scatter" as const,
         stats: {
           correlation: correlation.toFixed(3),
-          xMean: calculateMean(xVals).toFixed(2),
-          yMean: calculateMean(yVals).toFixed(2),
+          xMean: xMean.toFixed(2),
+          yMean: yMean.toFixed(2),
           xStdDev: calculateStdDev(xVals).toFixed(2),
           yStdDev: calculateStdDev(yVals).toFixed(2),
           count: scatterData.length,
@@ -150,6 +180,9 @@ export function DynamicExplorer() {
       }
     }
 
+    // ========================================================
+    // CASE 2 — PoliticalKnowledge (boolean → auto % only)
+    // ========================================================
     if (yIsBoolean || xIsBoolean) {
       const isYBoolean = yIsBoolean
       const variableAxis = isYBoolean ? xAxis : yAxis
@@ -157,10 +190,12 @@ export function DynamicExplorer() {
 
       surveyData.forEach((d) => {
         let key = String(d[variableAxis as keyof typeof d])
+
         if (variableAxis === "NewsSource") key = getNewsSourcePrimary(key)
         if (variableAxis === "PoliticalParty" || variableAxis === "ParentsParty") key = getPartySimplified(key)
         if (variableAxis === "Ideology") key = getIdeologyLabel(key)
         if (variableAxis === "GradeLevel") key = String(d.GradeLevel)
+
         if (!key || key === "Unknown" || key === "") return
 
         if (!groups[key]) groups[key] = { correct: 0, total: 0 }
@@ -195,8 +230,16 @@ export function DynamicExplorer() {
       }
     }
 
-    if (!xIsNumeric && !yIsNumeric && !xIsBoolean && !yIsBoolean) {
-      const groups: Record<string, Record<string, number>> = {}
+    // ========================================================
+    // CASE 3 — Grouped categorical (toggle supported)
+    // ========================================================
+    if (!xIsNumeric && !yIsNumeric) {
+      const groups: Record<
+        string,
+        { counts: Record<string, number>; total: number }
+      > = {}
+
+      const subCategorySet = new Set<string>()
 
       surveyData.forEach((d) => {
         let xKey = String(d[xAxis as keyof typeof d])
@@ -214,55 +257,76 @@ export function DynamicExplorer() {
 
         if (!xKey || !yKey || xKey === "Unknown" || yKey === "Unknown") return
 
-        if (!groups[xKey]) groups[xKey] = {}
-        groups[xKey][yKey] = (groups[xKey][yKey] || 0) + 1
+        if (!groups[xKey]) groups[xKey] = { counts: {}, total: 0 }
+
+        groups[xKey].counts[yKey] = (groups[xKey].counts[yKey] || 0) + 1
+        groups[xKey].total += 1
+        subCategorySet.add(yKey)
       })
 
-      const data = Object.entries(groups).map(([name, counts]) => ({
-        name,
-        ...counts,
-      }))
+      const seriesKeys = Array.from(subCategorySet)
 
-      const totalCount = data.reduce((sum, d) => {
-        return (
-          sum +
-          Object.values(d)
-            .filter((v) => typeof v === "number")
-            .reduce((s: number, v) => s + (v as number), 0)
-        )
-      }, 0)
+      let totalCount = 0
+      let totalPercentage = 0
+      let percentageEntries = 0
 
-      const categories = new Set<string>()
-      data.forEach((d) => {
-        Object.keys(d).forEach((k) => {
-          if (k !== "name") categories.add(k)
+      let topCount = { value: 0, category: "", subcategory: "" }
+      let topPercentage = { value: 0, category: "", subcategory: "" }
+
+      const data = Object.entries(groups).map(([name, group]) => {
+        const row: Record<string, number | string> = { name }
+        totalCount += group.total
+
+        seriesKeys.forEach((key) => {
+          const count = group.counts[key] || 0
+          const percentage = group.total > 0 ? (count / group.total) * 100 : 0
+
+          row[`${key}__count`] = count
+          row[`${key}__percentage`] = percentage
+
+          if (count > topCount.value) topCount = { value: count, category: name, subcategory: key }
+          if (percentage > topPercentage.value) topPercentage = { value: percentage, category: name, subcategory: key }
+
+          if (count > 0) {
+            totalPercentage += percentage
+            percentageEntries++
+          }
         })
+
+        return row
       })
+
+      const averagePercentage =
+        percentageEntries > 0 ? totalPercentage / percentageEntries : 0
 
       return {
-        chartData: data,
+        chartData: { data, seriesKeys },
         chartType: "grouped" as const,
         stats: {
-          totalResponses: totalCount,
-          xCategories: data.length,
-          yCategories: categories.size,
           count: totalCount,
+          xCategories: data.length,
+          yCategories: seriesKeys.length,
+          averagePercentage,
+          topCount,
+          topPercentage,
         },
       }
     }
 
+    // fallback
     return {
-      chartData: [],
+      chartData: { data: [], seriesKeys: [] },
       chartType: "grouped" as const,
       stats: {
-        totalResponses: 0,
+        count: 0,
         xCategories: 0,
         yCategories: 0,
-        count: 0,
+        averagePercentage: 0,
+        topCount: { value: 0, category: "", subcategory: "" },
+        topPercentage: { value: 0, category: "", subcategory: "" },
       },
     }
   }, [xAxis, yAxis])
-
   return (
     <div className="space-y-8">
       <div className="space-y-4">
@@ -278,52 +342,103 @@ export function DynamicExplorer() {
       </div>
 
       <Card className="p-8 bg-card border border-border shadow-xl">
+
+        {/* ================= VARIABLE SELECTION + TOGGLE ================= */}
         <div className="space-y-6 mb-10">
           <div className="flex items-center gap-3">
             <Activity className="w-5 h-5 text-primary" />
             <h3 className="text-xl font-bold text-foreground">Variable Selection</h3>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-3">
-              <label className="block text-sm font-bold text-foreground uppercase tracking-wide">X-Axis Variable</label>
-              <Select value={xAxis} onValueChange={setXAxis}>
-                <SelectTrigger className="bg-input border border-border text-foreground h-12 text-base font-semibold">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {columnOptions.map((col) => (
-                    <SelectItem key={col.value} value={col.value} className="text-base">
-                      {col.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+
+          <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 flex-1">
+              {/* X-axis */}
+              <div className="space-y-3">
+                <label className="block text-sm font-bold text-foreground uppercase tracking-wide">
+                  X-Axis Variable
+                </label>
+                <Select value={xAxis} onValueChange={setXAxis}>
+                  <SelectTrigger className="bg-input border border-border text-foreground h-12 text-base font-semibold">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {columnOptions.map((col) => (
+                      <SelectItem key={col.value} value={col.value} className="text-base">
+                        {col.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Y-axis */}
+              <div className="space-y-3">
+                <label className="block text-sm font-bold text-foreground uppercase tracking-wide">
+                  Y-Axis Variable
+                </label>
+                <Select value={yAxis} onValueChange={setYAxis}>
+                  <SelectTrigger className="bg-input border border-border text-foreground h-12 text-base font-semibold">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {columnOptions.map((col) => (
+                      <SelectItem key={col.value} value={col.value} className="text-base">
+                        {col.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <div className="space-y-3">
-              <label className="block text-sm font-bold text-foreground uppercase tracking-wide">Y-Axis Variable</label>
-              <Select value={yAxis} onValueChange={setYAxis}>
-                <SelectTrigger className="bg-input border border-border text-foreground h-12 text-base font-semibold">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {columnOptions.map((col) => (
-                    <SelectItem key={col.value} value={col.value} className="text-base">
-                      {col.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+
+            {/* TOGGLE — only for grouped OR numeric-bar (non-PoliticalKnowledge) */}
+            {(chartType === "grouped" || chartType === "bar") &&
+              !(yAxis === "PoliticalKnowledge" || xAxis === "PoliticalKnowledge") && (
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-secondary/40 px-4 py-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Display Metric</p>
+                    <p className="text-sm font-bold text-foreground">
+                      {showPercentages ? "Percentages" : "Counts"}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={showPercentages}
+                    onClick={() => setShowPercentages((prev) => !prev)}
+                    className={`relative inline-flex h-9 w-16 items-center rounded-full border transition-colors ${
+                      showPercentages
+                        ? "border-primary bg-primary/90"
+                        : "border-border bg-muted"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-7 w-7 transform rounded-full bg-background shadow transition-transform ${
+                        showPercentages ? "translate-x-8" : "translate-x-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+              )}
           </div>
         </div>
 
+
+
+        {/* ===================== MAIN CHART + SIDEBAR ===================== */}
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+
+          {/* ========================== CHART AREA ========================== */}
           <div className="lg:col-span-3">
             <div className="bg-secondary/20 rounded-2xl p-6 border border-border/50">
               <ResponsiveContainer width="100%" height={500}>
-                {chartType === "scatter" ? (
+
+                {/* ================== SCATTER ================== */}
+                {chartType === "scatter" && (
                   <ComposedChart>
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
+
                     <XAxis
                       dataKey="x"
                       type="number"
@@ -338,6 +453,7 @@ export function DynamicExplorer() {
                         fontWeight: 700,
                       }}
                     />
+
                     <YAxis
                       dataKey="y"
                       type="number"
@@ -352,13 +468,16 @@ export function DynamicExplorer() {
                         fontWeight: 700,
                       }}
                     />
+
                     <Tooltip content={<CustomTooltip />} cursor={{ strokeDasharray: "3 3" }} />
+
                     <Scatter
                       name="Data Points"
                       data={(chartData as any).scatter}
                       fill={CHART_COLORS[1]}
                       opacity={0.7}
                     />
+
                     <Line
                       type="linear"
                       dataKey="y"
@@ -369,90 +488,160 @@ export function DynamicExplorer() {
                       name="Correlation Line"
                     />
                   </ComposedChart>
-                ) : chartType === "bar" ? (
-                  <BarChart data={chartData as any}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
-                    <XAxis
-                      dataKey="name"
-                      stroke="hsl(var(--muted-foreground))"
-                      tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11, fontWeight: 600 }}
-                      angle={-15}
-                      textAnchor="end"
-                      height={80}
-                    />
-                    <YAxis
-                      stroke="hsl(var(--muted-foreground))"
-                      tick={{ fill: "hsl(var(--muted-foreground))", fontWeight: 600 }}
-                      label={{
-                        value:
-                          yAxis === "PoliticalKnowledge" || xAxis === "PoliticalKnowledge" ? "Correct (%)" : "Count",
-                        angle: -90,
-                        position: "insideLeft",
-                        fill: "hsl(var(--foreground))",
-                        fontWeight: 700,
-                      }}
-                    />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Bar
-                      dataKey={
-                        yAxis === "PoliticalKnowledge" || xAxis === "PoliticalKnowledge" ? "percentage" : "value"
-                      }
-                      radius={[8, 8, 0, 0]}
-                    >
-                      {(chartData as any).map((_entry: any, index: number) => (
-                        <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                ) : chartType === "grouped" ? (
-                  <BarChart data={chartData as any}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
-                    <XAxis
-                      dataKey="name"
-                      stroke="hsl(var(--muted-foreground))"
-                      tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11, fontWeight: 600 }}
-                      angle={-15}
-                      textAnchor="end"
-                      height={80}
-                    />
-                    <YAxis
-                      stroke="hsl(var(--muted-foreground))"
-                      tick={{ fill: "hsl(var(--muted-foreground))", fontWeight: 600 }}
-                      label={{
-                        value: "Count",
-                        angle: -90,
-                        position: "insideLeft",
-                        fill: "hsl(var(--foreground))",
-                        fontWeight: 700,
-                      }}
-                    />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Legend wrapperStyle={{ color: "hsl(var(--foreground))", fontWeight: 600, paddingTop: "20px" }} />
-                    {(chartData as any).length > 0 &&
-                      Object.keys((chartData as any)[0])
-                        .filter((k: string) => k !== "name")
-                        .map((key: string, idx: number) => (
-                          <Bar
-                            key={key}
-                            dataKey={key}
-                            fill={CHART_COLORS[idx % CHART_COLORS.length]}
-                            radius={[8, 8, 0, 0]}
-                          />
-                        ))}
-                  </BarChart>
-                ) : (
-                  <div>No chart data available</div>
                 )}
+
+
+
+                {/* ================== POLITICAL KNOWLEDGE BAR ================== */}
+                {chartType === "bar" &&
+                  (yAxis === "PoliticalKnowledge" || xAxis === "PoliticalKnowledge") && (
+                    <BarChart data={chartData as any}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
+
+                      <XAxis
+                        dataKey="name"
+                        stroke="hsl(var(--muted-foreground))"
+                        tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11, fontWeight: 600 }}
+                        angle={-15}
+                        textAnchor="end"
+                        height={80}
+                      />
+
+                      <YAxis
+                        stroke="hsl(var(--muted-foreground))"
+                        tick={{ fill: "hsl(var(--muted-foreground))", fontWeight: 600 }}
+                        label={{
+                          value: "Correct (%)",
+                          angle: -90,
+                          position: "insideLeft",
+                          fill: "hsl(var(--foreground))",
+                          fontWeight: 700,
+                        }}
+                      />
+
+                      <Tooltip content={<CustomTooltip />} />
+
+                      <Bar dataKey="percentage" radius={[8, 8, 0, 0]}>
+                        {(chartData as any).map((_entry: any, idx: number) => (
+                          <Cell key={idx} fill={CHART_COLORS[idx % CHART_COLORS.length]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  )}
+
+
+
+                {/* ================== NORMAL BAR (toggle counts/%) ================== */}
+                {chartType === "bar" &&
+                  !(yAxis === "PoliticalKnowledge" || xAxis === "PoliticalKnowledge") && (
+                    <BarChart data={chartData as any}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
+
+                      <XAxis
+                        dataKey="name"
+                        stroke="hsl(var(--muted-foreground))"
+                        tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11, fontWeight: 600 }}
+                        angle={-15}
+                        textAnchor="end"
+                        height={80}
+                      />
+
+                      <YAxis
+                        stroke="hsl(var(--muted-foreground))"
+                        tick={{ fill: "hsl(var(--muted-foreground))", fontWeight: 600 }}
+                        tickFormatter={(v: number) =>
+                          showPercentages ? `${v.toFixed(0)}%` : Number(v).toLocaleString()
+                        }
+                        label={{
+                          value: showPercentages ? "Percentage (%)" : "Count",
+                          angle: -90,
+                          position: "insideLeft",
+                          fill: "hsl(var(--foreground))",
+                          fontWeight: 700,
+                        }}
+                      />
+
+                      <Tooltip content={<CustomTooltip />} />
+
+                      <Bar
+                        dataKey={showPercentages ? "percentage" : "count"}
+                        radius={[8, 8, 0, 0]}
+                      >
+                        {(chartData as any).map((_entry: any, idx: number) => (
+                          <Cell key={idx} fill={CHART_COLORS[idx % CHART_COLORS.length]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  )}
+
+
+
+                {/* ================== GROUPED (toggle counts/%) ================== */}
+                {chartType === "grouped" && (
+                  <BarChart data={(chartData as any).data}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
+
+                    <XAxis
+                      dataKey="name"
+                      stroke="hsl(var(--muted-foreground))"
+                      tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11, fontWeight: 600 }}
+                      angle={-15}
+                      textAnchor="end"
+                      height={80}
+                    />
+
+                    <YAxis
+                      stroke="hsl(var(--muted-foreground))"
+                      tick={{ fill: "hsl(var(--muted-foreground))", fontWeight: 600 }}
+                      tickFormatter={(v: number) =>
+                        showPercentages ? `${v.toFixed(0)}%` : Number(v).toLocaleString()
+                      }
+                      domain={showPercentages ? [0, 100] : ["auto", "auto"]}
+                      label={{
+                        value: showPercentages ? "Share (%)" : "Count",
+                        angle: -90,
+                        position: "insideLeft",
+                        fill: "hsl(var(--foreground))",
+                        fontWeight: 700,
+                      }}
+                    />
+
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend
+                      wrapperStyle={{
+                        color: "hsl(var(--foreground))",
+                        fontWeight: 600,
+                        paddingTop: "20px",
+                      }}
+                    />
+
+                    {(chartData as any).seriesKeys.map((key: string, idx: number) => (
+                      <Bar
+                        key={key}
+                        dataKey={`${key}__${showPercentages ? "percentage" : "count"}`}
+                        name={`${key} ${showPercentages ? "(%)" : "(Count)"}`}
+                        fill={CHART_COLORS[idx % CHART_COLORS.length]}
+                        radius={[8, 8, 0, 0]}
+                      />
+                    ))}
+                  </BarChart>
+                )}
+
+
               </ResponsiveContainer>
             </div>
           </div>
 
+
+
+          {/* ========================== STATS SIDEBAR ========================== */}
           <div className="space-y-5">
             <div className="flex items-center gap-3 mb-4">
               <TrendingUp className="w-5 h-5 text-primary" />
               <h4 className="text-lg font-bold text-foreground">Statistical Analysis</h4>
             </div>
 
+            {/* ========= SCATTER STATS ========= */}
             {chartType === "scatter" && (
               <div className="space-y-4">
                 <Card className="p-5 bg-primary/10 border border-primary/30">
@@ -461,104 +650,143 @@ export function DynamicExplorer() {
                   </p>
                   <p className="text-3xl font-black text-primary">{stats.correlation}</p>
                   <p className="text-xs text-muted-foreground mt-2">
-                    {Math.abs(Number.parseFloat(stats.correlation || "0")) > 0.7
+                    {Math.abs(Number(stats.correlation)) > 0.7
                       ? "Strong"
-                      : Math.abs(Number.parseFloat(stats.correlation || "0")) > 0.4
-                        ? "Moderate"
-                        : "Weak"}{" "}
+                      : Math.abs(Number(stats.correlation)) > 0.4
+                      ? "Moderate"
+                      : "Weak"}{" "}
                     relationship
                   </p>
                 </Card>
+
                 <Card className="p-5 bg-secondary/30 border border-border">
-                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">R² Value</p>
-                  <p className="text-2xl font-black text-chart-2">{stats.rsquared}</p>
+                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">
+                    R² Value
+                  </p>
+                  <p className="text-2xl font-black">{stats.rsquared}</p>
                   <p className="text-xs text-muted-foreground mt-2">
-                    {(Number.parseFloat(stats.rsquared || "0") * 100).toFixed(1)}% variance explained
+                    {(Number(stats.rsquared) * 100).toFixed(1)}% variance explained
                   </p>
                 </Card>
+
                 <Card className="p-5 bg-secondary/30 border border-border">
                   <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">
                     Sample Size (n)
                   </p>
-                  <p className="text-2xl font-black text-chart-3">{stats.count}</p>
-                </Card>
-                <Card className="p-4 bg-secondary/30 border border-border space-y-3">
-                  <div>
-                    <p className="text-xs font-bold text-muted-foreground uppercase mb-1">X Mean ± SD</p>
-                    <p className="text-base font-bold text-foreground">
-                      {stats.xMean} ± {stats.xStdDev}
-                    </p>
-                  </div>
-                  <div className="border-t border-border pt-3">
-                    <p className="text-xs font-bold text-muted-foreground uppercase mb-1">Y Mean ± SD</p>
-                    <p className="text-base font-bold text-foreground">
-                      {stats.yMean} ± {stats.yStdDev}
-                    </p>
-                  </div>
+                  <p className="text-2xl font-black">{stats.count}</p>
                 </Card>
               </div>
             )}
 
-            {chartType === "bar" && (
-              <div className="space-y-4">
-                <Card className="p-5 bg-primary/10 border border-primary/30">
-                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">Overall Rate</p>
-                  <p className="text-3xl font-black text-primary">{stats.overallRate}</p>
-                  <p className="text-xs text-muted-foreground mt-2">Correct identification</p>
-                </Card>
-                <Card className="p-5 bg-secondary/30 border border-border">
-                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">
-                    Mean by Category
-                  </p>
-                  <p className="text-2xl font-black text-chart-2">{stats.average}</p>
-                </Card>
-                <Card className="p-5 bg-secondary/30 border border-border">
-                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">Highest Rate</p>
-                  <p className="text-xl font-black text-chart-3">{stats.highestRate}</p>
-                  <p className="text-xs text-muted-foreground mt-2">{stats.highestCategory}</p>
-                </Card>
-                <Card className="p-5 bg-secondary/30 border border-border">
-                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">
-                    Total Responses
-                  </p>
-                  <p className="text-2xl font-black text-chart-4">{stats.count}</p>
-                  <p className="text-xs text-muted-foreground mt-2">{stats.categories} categories</p>
-                </Card>
-              </div>
-            )}
 
+
+            {/* ========= POLITICAL KNOWLEDGE BAR STATS (no toggle) ========= */}
+            {chartType === "bar" &&
+              (yAxis === "PoliticalKnowledge" || xAxis === "PoliticalKnowledge") && (
+                <div className="space-y-4">
+                  <Card className="p-5 bg-primary/10 border border-primary/30">
+                    <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">
+                      Overall Rate
+                    </p>
+                    <p className="text-3xl font-black text-primary">{stats.overallRate}</p>
+                    <p className="text-xs text-muted-foreground mt-2">Correct identification</p>
+                  </Card>
+
+                  <Card className="p-5 bg-secondary/30 border border-border">
+                    <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">
+                      Mean by Category
+                    </p>
+                    <p className="text-2xl font-black">{stats.average}</p>
+                  </Card>
+
+                  <Card className="p-5 bg-secondary/30 border border-border">
+                    <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">
+                      Highest Rate
+                    </p>
+                    <p className="text-xl font-black">{stats.highestRate}</p>
+                    <p className="text-xs text-muted-foreground mt-2">{stats.highestCategory}</p>
+                  </Card>
+                </div>
+              )}
+
+
+
+            {/* ========= NORMAL BAR STATS (toggle applies) ========= */}
+            {chartType === "bar" &&
+              !(yAxis === "PoliticalKnowledge" || xAxis === "PoliticalKnowledge") && (
+                <div className="space-y-4">
+                  <Card className="p-5 bg-primary/10 border border-primary/30">
+                    <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">
+                      {showPercentages ? "Average (%)" : "Total Count"}
+                    </p>
+                    <p className="text-3xl font-black">
+                      {showPercentages
+                        ? stats.average + "%"
+                        : Number(stats.count).toLocaleString()}
+                    </p>
+                  </Card>
+                </div>
+              )}
+
+
+
+            {/* ========= GROUPED STATS ========= */}
             {chartType === "grouped" && (
               <div className="space-y-4">
                 <Card className="p-5 bg-primary/10 border border-primary/30">
                   <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">
-                    Total Responses
+                    {showPercentages ? "Average Share" : "Total Responses"}
                   </p>
-                  <p className="text-3xl font-black text-primary">{stats.count}</p>
+                  <p className="text-3xl font-black">
+                    {showPercentages
+                      ? `${stats.averagePercentage.toFixed(1)}%`
+                      : Number(stats.count).toLocaleString()}
+                  </p>
                 </Card>
-                <Card className="p-5 bg-secondary/30 border border-border">
-                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">Categories</p>
-                  <p className="text-2xl font-black text-chart-2">{stats.xCategories}</p>
-                </Card>
+
                 <Card className="p-5 bg-secondary/30 border border-border">
                   <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">
-                    Sub-Categories
+                    {showPercentages ? "Top Share" : "Largest Sub-Category"}
                   </p>
-                  <p className="text-2xl font-black text-chart-3">{stats.yCategories}</p>
+                  <p className="text-2xl font-black">
+                    {showPercentages
+                      ? `${stats.topPercentage.value.toFixed(1)}%`
+                      : Number(stats.topCount.value).toLocaleString()}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    {showPercentages
+                      ? `${stats.topPercentage.subcategory} in ${stats.topPercentage.category}`
+                      : `${stats.topCount.subcategory} in ${stats.topCount.category}`}
+                  </p>
+                </Card>
+
+                <Card className="p-5 bg-secondary/30 border border-border">
+                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">
+                    Category Overview
+                  </p>
+                  <p className="text-2xl font-black">{stats.xCategories}</p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    {stats.yCategories} sub-categories
+                  </p>
                 </Card>
               </div>
             )}
 
+            {/* CHART TYPE LABEL */}
             <Card className="p-4 bg-primary/5 border border-primary/20">
               <p className="text-xs text-muted-foreground leading-relaxed font-medium">
                 <BarChart3 className="w-4 h-4 inline mr-1.5" />
-                Chart type: {chartType === "scatter" && "Scatter + Correlation"}
+                Chart type:{" "}
+                {chartType === "scatter" && "Scatter + Correlation"}
                 {chartType === "bar" && "Bar Chart"}
                 {chartType === "grouped" && "Grouped Bar"}
               </p>
             </Card>
           </div>
+
         </div>
       </Card>
     </div>
   )
 }
+
