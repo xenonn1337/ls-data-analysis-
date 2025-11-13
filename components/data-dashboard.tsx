@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { DynamicExplorer } from "./dynamic-explorer"
 import { InsightsPage } from "./insights-page"
-import { BarChart3, Lightbulb, Menu, X, Download } from "lucide-react"
+import { BarChart3, Lightbulb, Menu, X, Download, Github } from "lucide-react"
 import { surveyData } from "@/lib/survey-data"
 import Image from "next/image"
 
@@ -148,13 +148,14 @@ export function DataDashboard() {
               Pennsylvania Political Survey Dashboard • November 2025 • {surveyData.length} Responses
             </p>
 
+            {/* GitHub Icon Link */}
             <a
               href="https://github.com/xenonn1337/ls-data-analysis"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors underline underline-offset-4"
+              className="flex justify-center pt-1"
             >
-              github.com/xenonn1337/ls-data-analysis
+              <Github className="w-5 h-5 text-muted-foreground hover:text-foreground transition-colors" />
             </a>
           </div>
         </div>
